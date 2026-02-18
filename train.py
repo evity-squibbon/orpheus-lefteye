@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Orpheus TTS Fine-Tuning Script for Left Eye Voice Clone
-   v2 — multi-epoch, cosine schedule, validation eval, best checkpoint saving
+   v3 — enhanced LoRA (r=128, +embed/lm_head), prosody-annotated data, dual export
 """
 
 import os, csv, torch, numpy as np
@@ -22,26 +22,28 @@ else:
 OUTPUT_DIR = Path("/workspace/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---- Training Hyperparameters ----
+# ---- Training Hyperparameters (v3) ----
 MAX_SEQ_LENGTH = 2048
 SPEAKER = "lefteye"
-NUM_EPOCHS = 5             # v1 was 1 — more passes = better voice capture
-LEARNING_RATE = 5e-5       # v1 was 2e-4 — lower LR + more epochs = smoother convergence
-LR_SCHEDULER = "cosine"    # v1 was linear — cosine decays more gracefully
-WARMUP_RATIO = 0.1         # 10% warmup instead of fixed 5 steps
-GRAD_ACCUM = 8             # v1 was 4 — larger effective batch (8) for stability
-LORA_R = 64
-LORA_ALPHA = 128           # v1 was 64 — 2x rank for stronger adaptation signal
-EVAL_STEPS = 50            # evaluate on val set every 50 steps
+NUM_EPOCHS = 5
+LEARNING_RATE = 5e-5
+LR_SCHEDULER = "cosine"
+WARMUP_RATIO = 0.1         # 10% warmup
+GRAD_ACCUM = 8              # effective batch size = 8
+LORA_R = 128                # v3: doubled from v2's 64
+LORA_ALPHA = 256            # v3: doubled from v2's 128 (keeps alpha/r = 2)
+EVAL_STEPS = 50
 SAVE_TOTAL_LIMIT = 5
 LOGGING_STEPS = 10
 
 print("=" * 60)
-print("Orpheus TTS Fine-Tuning — Left Eye Voice Clone (v2)")
+print("Orpheus TTS Fine-Tuning — Left Eye Voice Clone (v3)")
 print("=" * 60)
 print(f"  Epochs: {NUM_EPOCHS}, LR: {LEARNING_RATE}, Schedule: {LR_SCHEDULER}")
 print(f"  LoRA: r={LORA_R}, alpha={LORA_ALPHA}, Grad accum: {GRAD_ACCUM}")
 print(f"  Warmup: {WARMUP_RATIO*100:.0f}%, Eval every {EVAL_STEPS} steps")
+print(f"  Target modules: attn + MLP + embed_tokens + lm_head")
+print(f"  Data: v3 prosody-annotated, curated clips")
 
 # ---- Step 1: Load model with Unsloth ----
 print("\n[1/7] Loading Orpheus model with Unsloth...")
@@ -54,13 +56,14 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
 )
 
-# ---- Step 2: Apply LoRA ----
-print("\n[2/7] Applying LoRA adapters...")
+# ---- Step 2: Apply LoRA (v3: includes embed_tokens + lm_head) ----
+print("\n[2/7] Applying LoRA adapters (v3: +embed_tokens, +lm_head)...")
 model = FastLanguageModel.get_peft_model(
     model,
     r=LORA_R,
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                     "gate_proj", "up_proj", "down_proj"],
+                     "gate_proj", "up_proj", "down_proj",
+                     "embed_tokens", "lm_head"],  # v3: added embedding layers
     lora_alpha=LORA_ALPHA,
     lora_dropout=0,
     bias="none",
@@ -134,6 +137,7 @@ def process_samples(samples, desc="Processing"):
                 continue
             
             snac_tokens = encode_audio_to_snac_tokens(audio_path)
+            # v3: text field contains prosody-annotated transcriptions with Orpheus tags
             text_prompt = f"{SPEAKER}: {sample['text']}"
             text_ids = tokenizer.encode(text_prompt, add_special_tokens=False)
             
@@ -278,28 +282,34 @@ if trainer.state.log_history:
         print(f"  Final val loss: {val_losses[-1]:.4f}")
         print(f"  Best val loss: {min(val_losses):.4f}")
 
-# ---- Step 7: Save ----
-print("\n[7/7] Saving model...")
+# ---- Step 7: Save (v3: both F16 merged + Q8_0 GGUF) ----
+print("\n[7/7] Saving model (v3: dual export)...")
+
+# Save LoRA adapter
 model.save_pretrained(str(OUTPUT_DIR / "lora_adapter"))
 tokenizer.save_pretrained(str(OUTPUT_DIR / "lora_adapter"))
 print(f"  LoRA adapter saved to {OUTPUT_DIR / 'lora_adapter'}")
 
+# Export 1: F16 merged model
 try:
-    print("  Merging LoRA into base model...")
+    print("  Merging LoRA into base model (F16)...")
     model.save_pretrained_merged(str(OUTPUT_DIR / "merged_model"), tokenizer, save_method="merged_16bit")
-    print(f"  Merged model saved to {OUTPUT_DIR / 'merged_model'}")
+    print(f"  ✓ F16 merged model saved to {OUTPUT_DIR / 'merged_model'}")
 except Exception as e:
-    print(f"  Merge failed (non-critical): {e}")
+    print(f"  ✗ F16 merge failed: {e}")
 
+# Export 2: Q8_0 GGUF
 try:
-    print("  Exporting GGUF (q8_0)...")
+    print("  Exporting GGUF (Q8_0)...")
     model.save_pretrained_gguf(str(OUTPUT_DIR / "gguf"), tokenizer, quantization_method="q8_0")
-    print(f"  GGUF saved to {OUTPUT_DIR / 'gguf'}")
+    print(f"  ✓ Q8_0 GGUF saved to {OUTPUT_DIR / 'gguf'}")
 except Exception as e:
-    print(f"  GGUF export failed (non-critical): {e}")
+    print(f"  ✗ GGUF export failed: {e}")
 
 print("\n" + "=" * 60)
-print("Training complete!")
+print("Training complete! (v3)")
 print(f"  LoRA adapter: {OUTPUT_DIR / 'lora_adapter'}")
-print(f"  Checkpoints: {OUTPUT_DIR / 'checkpoints'}")
+print(f"  F16 merged:   {OUTPUT_DIR / 'merged_model'}")
+print(f"  Q8_0 GGUF:    {OUTPUT_DIR / 'gguf'}")
+print(f"  Checkpoints:  {OUTPUT_DIR / 'checkpoints'}")
 print("=" * 60)
