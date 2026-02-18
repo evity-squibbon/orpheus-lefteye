@@ -1,10 +1,10 @@
-# Orpheus TTS — Left Eye Voice Clone
+# Orpheus TTS — Voice Clone
 
-Fine-tuning [Orpheus 3B TTS](https://github.com/canopylabs/orpheus-tts) on Lisa "Left Eye" Lopes' speaking voice using LoRA adapters.
+Fine-tuning [Orpheus 3B TTS](https://github.com/canopylabs/orpheus-tts) on a speaking voice using LoRA adapters.
 
 ## Overview
 
-This project creates a custom TTS voice by fine-tuning the Orpheus 3B text-to-speech model on audio clips of Left Eye's speaking voice extracted from interviews, behind-the-scenes footage, and commentary. The result is a LoRA adapter that can generate speech in her voice from arbitrary text.
+This project creates a custom TTS voice by fine-tuning the Orpheus 3B text-to-speech model on audio clips of a speaking voice extracted from interviews, behind-the-scenes footage, and commentary. The result is a LoRA adapter that can generate speech in her voice from arbitrary text.
 
 ## Training Data
 
