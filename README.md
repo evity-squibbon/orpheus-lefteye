@@ -21,22 +21,35 @@ Audio was segmented into 5–20 second clips, transcribed, and aligned. Metadata
 
 ## Training Configuration
 
-| Parameter | Value |
-|-----------|-------|
-| Base model | `canopylabs/orpheus-3b-0.1-ft` |
-| Method | LoRA (via Unsloth) |
-| LoRA rank (r) | 64 |
-| LoRA alpha | 64 |
-| Target modules | q, k, v, o, gate, up, down proj |
-| Learning rate | 2e-4 (linear schedule) |
-| Batch size | 1 |
-| Gradient accumulation | 4 steps |
-| Epochs | 1 |
-| Max sequence length | 2048 tokens |
-| Quantization | 4-bit (QLoRA) |
-| Optimizer | AdamW 8-bit |
+| Parameter | v1 | v2 (current) |
+|-----------|-----|------|
+| Base model | `canopylabs/orpheus-3b-0.1-ft` | same |
+| Method | LoRA (via Unsloth) | same |
+| LoRA rank (r) | 64 | 64 |
+| LoRA alpha | 64 | **128** |
+| Target modules | q, k, v, o, gate, up, down proj | same |
+| Learning rate | 2e-4 (linear) | **5e-5 (cosine)** |
+| Warmup | 5 steps | **10% of total steps** |
+| Batch size | 1 | 1 |
+| Gradient accumulation | 4 steps | **8 steps** |
+| Epochs | 1 | **5** |
+| Validation eval | none | **every 50 steps** |
+| Best checkpoint | no | **yes (by val loss)** |
+| Max sequence length | 2048 tokens | same |
+| Quantization | 4-bit (QLoRA) | same |
+| Optimizer | AdamW 8-bit | same |
+
+### v2 rationale
+- **5 epochs** instead of 1 — v1 only saw each clip once; more passes improve voice capture
+- **Lower LR (5e-5)** with **cosine schedule** — smoother convergence, less overfitting
+- **10% warmup** — stabilizes early training vs fixed 5 steps
+- **Grad accumulation 8** — larger effective batch for more stable gradients
+- **LoRA alpha 128 (2×r)** — stronger adaptation signal
+- **Validation eval** — uses the 60 held-out clips to detect overfitting and save the best checkpoint
 
 ## Results
+
+### v1 (baseline)
 
 | Metric | Value |
 |--------|-------|
@@ -45,7 +58,11 @@ Audio was segmented into 5–20 second clips, transcribed, and aligned. Metadata
 | Training time | ~3.5 minutes |
 | Hardware | NVIDIA RTX A6000 (RunPod) |
 
-The model converges quickly due to the strong Orpheus base model. Audio tokenization (SNAC encoding all 531 clips) takes ~2 minutes; actual LoRA training takes ~3.5 minutes.
+### v2 (pending)
+
+v2 training with improved hyperparameters has not been run yet. Expected ~665 steps, ~17 minutes on A6000.
+
+The model converges quickly due to the strong Orpheus base model. SNAC encoding all 531 clips takes ~11 seconds on A6000; actual training is the bottleneck.
 
 ## RunPod Quick Start
 
@@ -56,19 +73,27 @@ The model converges quickly due to the strong Orpheus base model. Audio tokeniza
 git clone https://github.com/evity-squibbon/orpheus-lefteye.git /workspace/orpheus-lefteye
 cd /workspace/orpheus-lefteye
 
+# Copy data to where train.py expects it
+cp -r data/ /workspace/clips/
+cp -r metadata/ /workspace/metadata/
+
 # Install dependencies
 pip install unsloth datasets soundfile librosa snac accelerate
 
-# Run training (~6 min total: 2 min SNAC encoding + 3.5 min training)
+# Run training (~18 min total: ~11s SNAC encoding + ~17 min training)
 python train.py
 ```
 
+> **Note:** If using a lightweight Docker image (e.g., `nvidia/cuda:12.4.1-devel-ubuntu22.04`), install PyTorch first: `pip install torch --index-url https://download.pytorch.org/whl/cu124`
+
 The training script will:
 1. Load the Orpheus 3B model in 4-bit quantization
-2. Apply LoRA adapters
-3. Load SNAC codec and encode all audio clips to discrete tokens
-4. Train for 1 epoch (133 steps)
-5. Save the LoRA adapter to `output/lora_adapter/`
+2. Apply LoRA adapters (r=64, alpha=128)
+3. Load SNAC codec and encode all audio clips to discrete tokens (~11s)
+4. Train for 5 epochs (~665 steps) with cosine LR schedule
+5. Evaluate on validation set every 50 steps
+6. Save the best LoRA adapter (by val loss) to `output/lora_adapter/`
+7. Attempt merged model export and GGUF conversion
 
 ### Using the Pre-trained LoRA
 
